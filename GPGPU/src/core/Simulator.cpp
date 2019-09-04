@@ -228,7 +228,7 @@ void Simulator::Reload()
 
 	m_FloatImages[0].Init(m_Data.imageWidth, m_Data.imageHeight);
 	m_FloatImages[1].Init(m_Data.imageWidth, m_Data.imageHeight);
-	for (uint i = 0; i < m_Data.numWorkerThreads; i++)
+	for (int i = 0; i < m_Data.numWorkerThreads; i++)
 	{
 		m_WorkerThreads.emplace_back();
 	}
@@ -446,6 +446,9 @@ void Simulator::StartNewSessionGPU()
 	PrepareParamsStep();
 	ApplyHeater(m_SessionSrcBufferIndex);
 
+	err = m_CommandQueue.flush();
+	Utils::AssertCLError(err);
+
 	m_CurrentTime = 0;
 }
 
@@ -604,6 +607,11 @@ void Simulator::UpdateDynamicData(const SimulatorData& data)
 	m_Data.heaterLocation = data.heaterLocation;
 	m_Data.numWorkerThreads = data.numWorkerThreads;
 	m_Data.useWindowsThreads = data.useWindowsThreads;
+	m_Data.localWorkSize = data.localWorkSize;
+	m_Data.singleLocalWorkSize = data.singleLocalWorkSize;
+
+	m_LocalWorkSize = data.localWorkSize;
+	m_SingleWorkGroupSize = data.singleLocalWorkSize;
 
 	m_StartTemperature = data.startTemperature;
 	m_HeaterTemperature = data.heaterTemperature;
@@ -640,14 +648,14 @@ void Simulator::PrepareParamsOperation()
 
 void Simulator::PushFloatParamToCache(float f)
 {
-	assert(m_CacheCurrentCount < m_NumParamsPerStep);
+	assert(m_CacheCurrentCount < (int)m_NumParamsPerStep);
 	memcpy(&m_Cache.back()[m_CacheCurrentCount], &f, sizeof(float));
 	m_CacheCurrentCount++;
 }
 
 void Simulator::PushIntParamToCache(int f)
 {
-	assert(m_CacheCurrentCount < m_NumParamsPerStep);
+	assert(m_CacheCurrentCount < (int)m_NumParamsPerStep);
 	m_Cache.back()[m_CacheCurrentCount] = f;
 	m_CacheCurrentCount++;
 }
@@ -728,8 +736,8 @@ void Simulator::EnqueueStepsShared(uint numSteps)
 
 void Simulator::CPUThreadMain(uint numSteps)
 {
-	Timer totalTimer;
 	cl_int err;
+	Timer totalTimer;
 	ClearParamsCache();
 	for (uint i = 0; i < numSteps; i++)
 	{
@@ -756,7 +764,7 @@ void Simulator::CPUThreadMain(uint numSteps)
 		{
 			for (uint i = 0; i < m_WorkerThreads.size(); i++)
 			{
-				int workerSize = size / (m_WorkerThreads.size() - i);
+				int workerSize = size / ((int)m_WorkerThreads.size() - i);
 				m_WorkerThreads[i] = std::thread(&Simulator::CPUWorkerMain, this, start, start + workerSize);
 				size -= workerSize;
 				start += workerSize;
@@ -769,7 +777,7 @@ void Simulator::CPUThreadMain(uint numSteps)
 		}
 		else
 		{
-			for (uint i = 0; i < m_Data.numWorkerThreads; i++)
+			for (int i = 0; i < m_Data.numWorkerThreads; i++)
 			{
 				int workerSize = size / (m_Data.numWorkerThreads - i);
 				m_WorkerThreadsData[i].simulator = this;
@@ -783,7 +791,7 @@ void Simulator::CPUThreadMain(uint numSteps)
 			// WaitForThreadpoolWorkCallbacks()
 			CloseThreadpoolCleanupGroupMembers(m_ThreadpoolCleanupGroup, FALSE, NULL);
 		}
-		if (m_HeaterLocation.second >= m_CPUStartRow)
+		if (m_HeaterLocation.second >= (int)m_CPUStartRow)
 			m_FloatImages[m_SessionDestFloatImageIndex][m_HeaterLocation.second][m_HeaterLocation.first] = m_HeaterTemperature;
 		std::swap(m_SessionSrcFloatImageIndex, m_SessionDestFloatImageIndex);
 		cpuTimer.Loop();
@@ -876,7 +884,7 @@ void Simulator::CPUWorkerMain(uint startPos, uint endPos)
 			int nx = x + offsets[i][0];
 			int ny = y + offsets[i][1];
 
-			if (nx < 0 || ny < 0 || nx >= m_ImageWidth || ny >= m_ImageHeight)
+			if (nx < 0 || ny < 0 || nx >= (int)m_ImageWidth || ny >= (int)m_ImageHeight)
 				sum += m_StartTemperature;
 			else sum += m_FloatImages[m_SessionSrcFloatImageIndex][ny][nx];
 		}
@@ -905,7 +913,7 @@ float Simulator::ComputeCPUSum()
 	{
 		for (uint i = 0; i < m_WorkerThreads.size(); i++)
 		{
-			int workerSize = size / (m_WorkerThreads.size() - i);
+			int workerSize = size / ((int)m_WorkerThreads.size() - i);
 			m_WorkerThreads[i] = std::thread(&Simulator::CPUSumWorkerMain, this, &result, &mutex, start, start + workerSize);
 			size -= workerSize;
 			start += workerSize;
@@ -919,9 +927,9 @@ float Simulator::ComputeCPUSum()
 	else
 	{
 		HANDLE mutex = CreateMutex(NULL, FALSE, NULL);
-		for (uint i = 0; i < m_Data.numWorkerThreads; i++)
+		for (int i = 0; i < m_Data.numWorkerThreads; i++)
 		{
-			int workerSize = size / (m_WorkerThreads.size() - i);
+			int workerSize = size / ((int)m_WorkerThreads.size() - i);
 			m_WorkerThreadsData[i].simulator = this;
 			m_WorkerThreadsData[i].startPos = start;
 			m_WorkerThreadsData[i].endPos = start + workerSize;
@@ -1015,6 +1023,9 @@ void Simulator::StartNewSession()
 
 void Simulator::EnqueueSteps(uint numSteps)
 {
+	cl_int err = m_CommandQueue.finish();
+	Utils::AssertCLError(err);
+
 	if (m_Data.useCPUAndGPU)
 		EnqueueStepsShared(numSteps);
 	else EnqueueStepsGPU(numSteps);

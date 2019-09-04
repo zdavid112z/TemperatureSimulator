@@ -27,7 +27,7 @@ struct SimulatorData
 	int numParamsPerStep = 50;
 	int numWorkerThreads = 12;
 	int cpuStartRow = 200;
-	std::pair<int, int> heaterLocation = std::make_pair(20, 20);
+	std::pair<int, int> heaterLocation = std::make_pair(210, 210);
 	float heaterTemperature = 10000;
 	bool useCPUAndGPU = false;
 	bool useWindowsThreads = true;

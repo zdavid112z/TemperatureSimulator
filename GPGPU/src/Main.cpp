@@ -30,7 +30,7 @@ public:
 	SimulatorData simData, toChangeSimData;
 	ApplicationData initialData;
 	bool paused = false;
-	int stepsPerOperation = 100;
+	int stepsPerOperation = 1;
 	float meshScaledownFactor = 256;
 	bool followCursor = false;
 	float lastSumOfChanges = 0;
@@ -64,6 +64,28 @@ public:
 
 		simulator = new Simulator(g, texture, simData);
 		simulator->StartNewSession();
+
+		simData.singleLocalWorkSize = (uint)simulator->GetMaxWorkItemSizes()[0];
+		int worksizeX = 1, worksizeY = (int)simulator->GetMaxWorkItemSizes()[1], bestWorksizeX, bestWorksizeY;
+		bestWorksizeX = worksizeX;
+		bestWorksizeY = worksizeY;
+		while (worksizeY > 0)
+		{
+			worksizeX *= 2;
+			worksizeY /= 2;
+			if (std::abs(worksizeX - worksizeY) < std::abs(bestWorksizeX - bestWorksizeY))
+			{
+				bestWorksizeX = worksizeX;
+				bestWorksizeY = worksizeY;
+			}
+		}
+		simData.localWorkSize = std::make_pair(bestWorksizeX, bestWorksizeY);
+
+		toChangeSimData.localWorkSize = simData.localWorkSize;
+		toChangeSimData.singleLocalWorkSize = simData.singleLocalWorkSize;
+
+		simulator->UpdateDynamicData(simData);
+
 		simulator->EnqueueSteps(stepsPerOperation);
 	}
 
@@ -84,7 +106,7 @@ public:
 
 	char* Strdup(const char* str)
 	{
-		int len = strlen(str);
+		size_t len = strlen(str);
 		char* copy = new char[len + 1];
 		memcpy(copy, str, len + 1);
 		return copy;
@@ -93,14 +115,14 @@ public:
 	void PlotHistogram(const char* label, const std::vector<float>& times, float color[3])
 	{
 		std::mt19937 randEngine(42069);
-		float size = std::min(historySize, (int)times.size());
+		int size = std::min(historySize, (int)times.size());
 		if (size == 0)
 		{
 			ImGui::PlotMultiLines(label, 0, nullptr, nullptr, [](const void* data, int idx) -> float
 			{
 				float* v = (float*)data;
 				return v[idx];
-			}, nullptr, 0, 0, plotMaxHeight, ImVec2(0, 120));
+			}, nullptr, 0, 0, (float)plotMaxHeight, ImVec2(0, 120));
 			return;
 		}
 		std::vector<float*> grid;
@@ -111,7 +133,7 @@ public:
 		for (int i = 0; i < plotNumGridLines; i++)
 		{
 			float* line = new float[size];
-			line[0] = plotMaxHeight * (plotNumGridLines - i) / (plotNumGridLines + 1);
+			line[0] = 1.f * plotMaxHeight * (plotNumGridLines - i) / (plotNumGridLines + 1);
 			for(int j = 1; j < size; j++)
 				line[j] = line[0];
 			grid.push_back(line);
@@ -127,7 +149,7 @@ public:
 		{
 			float* v = (float*)data;
 			return v[idx];
-		}, (void**)&grid[0], size, 0, plotMaxHeight, ImVec2(0, 120));
+		}, (void**)&grid[0], size, 0, (float)plotMaxHeight, ImVec2(0, 120));
 		for (int i = 0; i < plotNumGridLines; i++)
 		{
 			delete[] grid[i];
@@ -142,39 +164,67 @@ public:
 		ImGui::Text("Stats");
 		PlotHistogram("Operation times", operationTimes, operationTimesColor);
 		PlotHistogram("Operation times per step", operationTimesPerStep, operationTimesPerStepColor);
-
-		ImGui::Separator();
-		ImGui::Text("Dynamic Simulator Data");
-		ImGui::Text(("Current step: " + std::to_string(simulator->GetSessionTime())).c_str());
-		ImGui::Text(("Sum of changes / size: " + std::to_string(lastSumOfChanges)).c_str());
-		ImGui::SliderInt("Ambient Temperature", &simData.startTemperature, 0, 1000);
-		ImGui::SliderInt("Ambient Temperature (fast)", &simData.startTemperature, 0, 50000);
-		ImGui::SliderFloat("Heater Temperature", &simData.heaterTemperature, 0, 10000);
-		ImGui::SliderFloat("Heater Temperature (fast)", &simData.heaterTemperature, 10000, 1000000);
-		ImGui::SliderInt("Heater Location X", &simData.heaterLocation.first, 0, simData.imageWidth - 1);
-		ImGui::SliderInt("Heater Location Y", &simData.heaterLocation.second, 0, simData.imageHeight- 1);
-		ImGui::SliderInt("CPU Row", &simData.cpuStartRow, 2, simData.imageHeight - 2);
-		ImGui::SliderInt("CPU Workers", &simData.numWorkerThreads, 1, 32);
-		ImGui::SliderInt("Steps per operation", &stepsPerOperation, 1, 200);
-		ImGui::SliderFloat("Mesh scaledown factor", &meshScaledownFactor, 1, 4096);
 		ImGui::SliderInt("History size", &historySize, 10, 2000);
 		ImGui::SliderInt("Num plot lines", &plotNumGridLines, 0, 5);
 		ImGui::SliderInt("Max plot height", &plotMaxHeight, 5, 200);
-		ImGui::ColorEdit3("Clear color", (float*)&m_ClearColor);
-		ImGui::ColorEdit3("Operation times color", operationTimesColor);
-		ImGui::ColorEdit3("Operation times per step color", operationTimesPerStepColor);
-		ImGui::Checkbox("Heater follow cursor ('F' key)", &followCursor);
-		ImGui::Checkbox("Display difference ('D' key)", &displayDifference);
-		ImGui::Checkbox("Use Windows Threadpools", &simData.useWindowsThreads);
+
+		ImGui::Separator();
+		ImGui::Text("Dynamic Simulator Data");
+		ImGui::Text("Current step: %d", simulator->GetSessionTime());
+		ImGui::Text("Sum of changes / size: %f",lastSumOfChanges);
+		if (ImGui::TreeNode("CPU Settings"))
+		{
+			ImGui::Text("CPU doing %.2f %% of the work", (float)(simData.imageHeight - simData.cpuStartRow) / simData.imageHeight * 100.f);
+			ImGui::SliderInt("CPU Row", &simData.cpuStartRow, 2, simData.imageHeight - 2);
+			ImGui::SliderInt("CPU Workers", &simData.numWorkerThreads, 1, 32);
+			ImGui::Checkbox("Use Windows Threadpools", &simData.useWindowsThreads);
+			ImGui::TreePop();
+			ImGui::Separator();
+		}
+		if (ImGui::TreeNode("Environment Settings"))
+		{
+			ImGui::SliderInt("Ambient Temperature", &simData.startTemperature, 0, 1000);
+			ImGui::SliderInt("Ambient Temperature (fast)", &simData.startTemperature, 0, 50000);
+			ImGui::SliderFloat("Heater Temperature", &simData.heaterTemperature, 0, 10000);
+			ImGui::SliderFloat("Heater Temperature (fast)", &simData.heaterTemperature, 10000, 1000000);
+			ImGui::SliderInt("Heater Location X", &simData.heaterLocation.first, 0, simData.imageWidth - 1);
+			ImGui::SliderInt("Heater Location Y", &simData.heaterLocation.second, 0, simData.imageHeight - 1);
+			ImGui::Checkbox("Heater follow cursor ('F' key)", &followCursor);
+			ImGui::TreePop();
+			ImGui::Separator();
+		}
+		if (ImGui::TreeNode("Graphics Settings"))
+		{
+			ImGui::SliderFloat("Mesh scaledown factor", &meshScaledownFactor, 1, 4096);
+			ImGui::ColorEdit3("Clear color", (float*)&m_ClearColor);
+			ImGui::ColorEdit3("Operation times color", operationTimesColor);
+			ImGui::ColorEdit3("Operation times per step color", operationTimesPerStepColor);
+			ImGui::Checkbox("Display difference ('D' key)", &displayDifference);
+			if (ImGui::Button("Reset view"))
+			{
+				camera->ResetView();
+			}
+			ImGui::TreePop();
+			ImGui::Separator();
+		}
+		if (ImGui::TreeNode("Simulation Settings"))
+		{
+			ImGui::InputInt("Single Local Work Size", (int*)&toChangeSimData.singleLocalWorkSize, 0, 0);
+			ImGui::InputInt("Local Work Size on X", (int*)&toChangeSimData.localWorkSize.first, 0, 0);
+			ImGui::InputInt("Local Work Size on Y", (int*)&toChangeSimData.localWorkSize.second, 0, 0);
+			ImGui::SliderInt("Steps per operation", &stepsPerOperation, 1, 200);
+			if (ImGui::Button("Update worksizes"))
+			{
+				simData.localWorkSize = toChangeSimData.localWorkSize;
+				simData.singleLocalWorkSize = toChangeSimData.singleLocalWorkSize;
+			}
+			ImGui::TreePop();
+			ImGui::Separator();
+		}
 
 		simData.heaterLocation.first = std::max(std::min(simData.heaterLocation.first, (int)simData.imageWidth - 1), 0);
 		simData.heaterLocation.second = std::max(std::min(simData.heaterLocation.second, (int)simData.imageHeight - 1), 0);
-
-		if (ImGui::Button("Reset view"))
-		{
-			camera->ResetView();
-		}
-		ImGui::SameLine();
+		
 		if (ImGui::Button("Pause"))
 		{
 			paused = true;
@@ -189,7 +239,7 @@ public:
 		{
 			singleStep = true;
 		}
-		ImGui::SameLine();
+		
 		if (ImGui::Button("Restart Session"))
 		{
 			simulator->UpdateDynamicData(simData);
@@ -200,9 +250,6 @@ public:
 		ImGui::Text("Static Simulator Data");
 		ImGui::InputInt("Image width", (int*)&toChangeSimData.imageWidth, 0, 0);
 		ImGui::InputInt("Image height", (int*)&toChangeSimData.imageHeight, 0, 0);
-		ImGui::InputInt("Single Local Work Size", (int*)&toChangeSimData.singleLocalWorkSize, 0, 0);
-		ImGui::InputInt("Local Work Size on X", (int*)&toChangeSimData.localWorkSize.first, 0, 0);
-		ImGui::InputInt("Local Work Size on Y", (int*)&toChangeSimData.localWorkSize.second, 0, 0);
 		ImGui::Checkbox("Use GPU and CPU", &toChangeSimData.useCPUAndGPU);
 		std::string workItemSizesDisplayString = "Max work item sizes: (";
 		for (int i = 0; i < simulator->GetMaxWorkItemSizes().size(); i++)
@@ -216,8 +263,6 @@ public:
 		{
 			simData.imageWidth = toChangeSimData.imageWidth;
 			simData.imageHeight = toChangeSimData.imageHeight;
-			simData.singleLocalWorkSize = toChangeSimData.singleLocalWorkSize;
-			simData.localWorkSize = toChangeSimData.localWorkSize;
 			simData.numParamsPerStep = toChangeSimData.numParamsPerStep;
 			simData.heaterLocation.first = std::min(simData.heaterLocation.first, (int)simData.imageWidth - 1);
 			simData.heaterLocation.second = std::min(simData.heaterLocation.second, (int)simData.imageHeight - 1);
@@ -348,6 +393,9 @@ int main(int argc, char** args)
 	ApplicationData appdata;
 	appdata.displayData = data;
 	appdata.targetUPS = 0;
+
+	SimulatorData simData;
+	appdata.simData = simData;
 
 	SimulatorApplication* app = nullptr;
 	do
