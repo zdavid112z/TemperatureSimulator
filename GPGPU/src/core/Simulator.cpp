@@ -969,7 +969,7 @@ void Simulator::CPUWindowsSumWorkerMain(PTP_CALLBACK_INSTANCE instance, PVOID pt
 	ReleaseMutex(data->mutex);
 }
 
-bool Simulator::StepsDoneShared(float& sumOfChanges)
+bool Simulator::StepsDoneShared(float& sumOfChanges)	
 {
 	bool done = m_SharedStepsDone.load();
 	if (done)
@@ -981,6 +981,8 @@ bool Simulator::StepsDoneShared(float& sumOfChanges)
 
 void Simulator::ChangeCPURow(uint newRow)
 {
+	if (!m_Data.useCPUAndGPU)
+		return;
 	cl_int err;
 	if (newRow == m_CPUStartRow)
 		return;

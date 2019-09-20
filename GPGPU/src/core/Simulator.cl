@@ -49,7 +49,7 @@ kernel void Simulate(global int* params, global float* input, global float* outp
 		if (nx < 0 || ny < 0 || nx >= params[IMAGE_WIDTH] || ny >= params[IMAGE_HEIGHT])
 			sum += params[START_TEMP];
 		else sum += input[nx + ny * params[IMAGE_WIDTH]];
-#else	
+#else
 		int nx = clamp(x + params[OFFSET_X] * i, 0, params[IMAGE_WIDTH] - 1);
 		int ny = clamp(y + params[OFFSET_Y] * i, 0, params[IMAGE_HEIGHT] - 1);
 		sum += input[nx + ny * params[IMAGE_WIDTH]];
